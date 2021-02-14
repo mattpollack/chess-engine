@@ -29,12 +29,17 @@ game notation
 
 import random
 
-class IllegalMove(Exception):
+class GameActionException(Exception):
     def __init__(self, message):
         super().__init__(message)
 
-class Concede(Exception):
-    pass
+class IllegalMove(GameActionException):
+    def __init__(self, message):
+        super().__init__(message)
+
+class Concede(GameActionException):
+    def __init__(self):
+        super().__init__("Concede")
 
 class Position(object):
     def __init__(self, x, y):
@@ -60,6 +65,7 @@ class Piece(object):
     def __init__(self, prefix, color):
         self.prefix = prefix
         self.color = color
+        self.hasMoved = False
 
     def canMove(self, start, end, board):
         raise Exception("Attempt to canMove Piece base class (not implemented)")
@@ -67,10 +73,12 @@ class Piece(object):
     def copy(self):
         raise Exception("Attempt to copy Piece base class (not implemented)")
 
+    def setMoved(self):
+        self.hasMoved = True
+
 class Pawn(Piece):
     def __init__(self, color):
         super().__init__(" ", color)
-
         displacement = None
 
         if self.color == "w":
@@ -81,8 +89,9 @@ class Pawn(Piece):
         
         # Precompute allowed moves before checking the board
         self.allowedMoves = [
-            Position(-1, 0).add(displacement),
+            # Moving forward is the first allow move (for first pawn move)
             Position(0, 0).add(displacement),
+            Position(-1, 0).add(displacement),
             Position(1, 0).add(displacement),
         ]
 
@@ -93,6 +102,10 @@ class Pawn(Piece):
             return False
         
         relative = end.sub(start)
+        allowedMoves = self.allowedMoves
+
+        if not self.hasMoved:
+            allowedMoves.append(Position(0, self.allowedMoves[0].y*2)) 
 
         if not relative in self.allowedMoves:
             return False
@@ -259,7 +272,7 @@ class Board:
         self.__grid = {}
 
     def __str__(self):
-        res = "  0-1-2-3-4-5-6-7-\n"
+        res = "   0 1 2 3 4 5 6 7\n"
 
         for y in range(7, -1, -1):
             res += f'{y} '
@@ -286,7 +299,7 @@ class Board:
 
             res += f' {y}\n'
 
-        return res + "  0-1-2-3-4-5-6-7-"
+        return res + "   0 1 2 3 4 5 6 7"
     
     def getPiece(self, position):
         try:
@@ -346,6 +359,8 @@ class Board:
                 self.removePiece(end)
 
             raise IllegalMove((start, end))
+
+        piece.setMoved()
 
         return otherPiece
     
@@ -418,6 +433,12 @@ class StandardGame(object):
             self.white = playerB
             self.black = playerA
 
+    def playerLoses(self, color):
+        if color == "w":
+            self.winner = "b"
+        else:
+            self.winner = "w"
+
     def turn(self):
         if not self.winner == None:
             return self.winner
@@ -441,41 +462,70 @@ class StandardGame(object):
             move = player.Do(self.board.copy(), color)
             start = move[0]
             end = move[1]
-            self.board.movePiece(start, end)
-        except Concede:
-            if color == "w":
-                self.winner = "b"
-            else:
-                self.winner = "w"
+            piece = self.board.getPiece(start)
 
-            return None
+            if piece != None and piece.color != color:
+                raise IllegalMove((start, end))
+
+            self.board.movePiece(start, end)
+        except GameActionException:
+            return self.playerLoses(color)
 
         # Check for checkmate
         if self.board.playerInCheckmate(color):
-            if color == "w":
-                self.winner = "b"
-            else:
-                self.winner = "w"
+            return self.playerLoses(color)
 
-        # Check that there aren't just two kings
+        # Perform all state based checks
         pieces = self.board.getPieces()
         justKings = True
 
-        for p in pieces:
-            if not isinstance(p[0], King):
+        for pair in pieces:
+            piece = pair[0]
+            pos = pair[1]
+
+            # Check that there aren't just two kings
+            if not isinstance(piece, King):
                 justKings = False
-                break
-        
+
+            # Check for any pawn promotions
+            if isinstance(piece, Pawn) and ((piece.color == "w" and pos.y == 7) or (piece.color == "b" and pos.y == 0)):
+                try:
+                    promoted = player.Promote(self.board.copy(), piece, pos)
+
+                    if not isinstance(promoted, Piece) or isinstance(promoted, Pawn):
+                        raise IllegalMove
+
+                    self.board.placePiece(promoted, pos)
+
+                except Exception:
+                    return self.playerLoses(color)
+
         if justKings:
             self.winner = "draw"
-        
-        # TODO: check for draws where the other player has no more legal moves
-        
+
         return None
 
+class PlayerCharacter(object):
+    def Promote(self, board, piece, position):
+        return Queen(piece.color)
+
+    def Do(self, board, color):
+        print(board)
+        print(f'--- Your turn: {color} ---')
+        print("Enter start x: ")
+        sx = int(input())
+        print("Enter start y: ")
+        sy = int(input())
+        print("Enter end x: ")
+        ex = int(input())
+        print("Enter end y: ")
+        ey = int(input())
+
+        return (Position(sx, sy), Position(ex, ey))
+
 class MakesALegalMove(object):
-    def __init__(self):
-        super().__init__()
+    def Promote(self, board, piece, position):
+        return Queen(piece.color)
 
     def Do(self, board, color):
         pieces = board.getPieces()
@@ -508,13 +558,23 @@ class MakesALegalMove(object):
 
             return move
         
-        raise Concede
+        raise Concede()
 
-game = StandardGame(MakesALegalMove(), MakesALegalMove())
-print (game.board)
+# TODO:
+# - [x] Pawn first move
+# - [ ] En Passant
+# - [x] Promotion
+# - Draws
+#   - [ ] Repeated actions
+#   - [ ] No legal moves 
+# - [ ] Non brute force move generation
+# - [ ] CanMove vs IllegalMove discrepancy 
+# - [x] Player character
+
+game = StandardGame(MakesALegalMove(), PlayerCharacter())
 
 while game.winner == None:
     game.turn()
-    print (game.board)
 
+print (game.board)
 print(f'The winner is {game.winner}!')
